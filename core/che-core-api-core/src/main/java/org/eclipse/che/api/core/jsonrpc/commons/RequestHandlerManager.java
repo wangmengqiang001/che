@@ -13,6 +13,8 @@ package org.eclipse.che.api.core.jsonrpc.commons;
 
 import static org.slf4j.LoggerFactory.getLogger;
 
+import com.google.common.collect.ArrayListMultimap;
+import com.google.common.collect.Multimap;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
 import java.util.List;
@@ -45,6 +47,8 @@ import org.slf4j.Logger;
 @Singleton
 public class RequestHandlerManager {
   private static final Logger LOGGER = getLogger(RequestHandlerManager.class);
+
+  private final Multimap<String, JsonRpcMethodInvokerFilter> filters = ArrayListMultimap.create();
 
   private final Map<String, Category> methodToCategory = new ConcurrentHashMap<>();
   private final Map<String, OneToOneHandler> oneToOneHandlers = new ConcurrentHashMap<>();
@@ -79,6 +83,13 @@ public class RequestHandlerManager {
 
     methodToCategory.put(method, Category.ONE_TO_ONE);
     oneToOneHandlers.put(method, new OneToOneHandler<>(pClass, rClass, biFunction));
+  }
+
+  public synchronized void registerMethodInvokerFilter(
+      JsonRpcMethodInvokerFilter filter, String... methods) {
+    for (String method : methods) {
+      filters.put(method, filter);
+    }
   }
 
   public synchronized <P, R> void registerOneToPromiseOne(
@@ -204,13 +215,19 @@ public class RequestHandlerManager {
     return true;
   }
 
-  public void handle(String endpointId, String requestId, String method, JsonRpcParams params) {
+  public <P, R> void handle(
+      String endpointId, String requestId, String method, JsonRpcParams params) {
     mustBeRegistered(method);
 
     switch (methodToCategory.get(method)) {
       case ONE_TO_ONE:
-        OneToOneHandler oneToOneHandler = oneToOneHandlers.get(method);
-        transmitOne(endpointId, requestId, oneToOneHandler.handle(endpointId, params));
+        @SuppressWarnings("unchecked")
+        OneToOneHandler<P, R> oneToOneHandler = oneToOneHandlers.get(method);
+        P param = composeOne(params, oneToOneHandler.pClass);
+        for (JsonRpcMethodInvokerFilter filter : filters.get(method)) {
+          filter.accept(method, param);
+        }
+        transmitOne(endpointId, requestId, oneToOneHandler.handle(endpointId, param));
         break;
       case ONE_TO_MANY:
         OneToManyHandler oneToManyHandler = oneToManyHandlers.get(method);
@@ -233,29 +250,61 @@ public class RequestHandlerManager {
         transmitMany(endpointId, requestId, noneToManyHandler.handle(endpointId));
         break;
       case ONE_TO_PROMISE_ONE:
-        OneToPromiseOneHandler promiseOneHandler = oneToPromiseOneHandlers.get(method);
-        transmitPromiseOne(endpointId, requestId, promiseOneHandler.handle(endpointId, params));
+        @SuppressWarnings("unchecked")
+        OneToPromiseOneHandler<P, JsonRpcPromise<R>> promiseOneHandler =
+            oneToPromiseOneHandlers.get(method);
+        P one = composeOne(params, promiseOneHandler.pClass);
+        transmitPromiseOne(endpointId, requestId, promiseOneHandler.handle(endpointId, one));
         break;
       default:
         LOGGER.error("Something went wrong trying to find out handler category");
     }
   }
 
-  public void handle(String endpointId, String method, JsonRpcParams params) {
+  public <P> void handle(String endpointId, String method, JsonRpcParams params) {
     mustBeRegistered(method);
 
     switch (methodToCategory.get(method)) {
       case ONE_TO_NONE:
-        oneToNoneHandlers.get(method).handle(endpointId, params);
-        break;
+        {
+          @SuppressWarnings("unchecked")
+          OneToNoneHandler<P> oneToNoneHandler = oneToNoneHandlers.get(method);
+          P param = composeOne(params, oneToNoneHandler.pClass);
+          for (JsonRpcMethodInvokerFilter filter : filters.get(method)) {
+            filter.accept(method, param);
+          }
+          oneToNoneHandler.handle(endpointId, param);
+          break;
+        }
       case MANY_TO_NONE:
-        manyToNoneHandlers.get(method).handle(endpointId, params);
-        break;
+        {
+          @SuppressWarnings("unchecked")
+          ManyToNoneHandler<P> manyToNoneHandler = manyToNoneHandlers.get(method);
+          List<P> listDto = composeMany(params, manyToNoneHandler.pClass);
+          filter(method, listDto);
+          manyToNoneHandler.handle(endpointId, params);
+          break;
+        }
       case NONE_TO_NONE:
+        filter(method);
         noneToNoneHandlers.get(method).handle(endpointId);
         break;
       default:
         LOGGER.error("Something went wrong trying to find out handler category");
+    }
+  }
+
+  private <P> List<P> composeMany(JsonRpcParams params, Class<P> pClass) {
+    return dtoComposer.composeMany(params, pClass);
+  }
+
+  private <P> P composeOne(JsonRpcParams params, Class<P> pClass) {
+    return dtoComposer.composeOne(params, pClass);
+  }
+
+  private void filter(String method, Object... param) {
+    for (JsonRpcMethodInvokerFilter filter : filters.get(method)) {
+      filter.accept(method, param);
     }
   }
 
@@ -275,7 +324,7 @@ public class RequestHandlerManager {
     }
   }
 
-  private void transmitOne(String endpointId, String id, Object result) {
+  private <R> void transmitOne(String endpointId, String id, R result) {
     JsonRpcResult jsonRpcResult = new JsonRpcResult(result);
     JsonRpcResponse jsonRpcResponse = new JsonRpcResponse(id, jsonRpcResult, null);
     String message = marshaller.marshall(jsonRpcResponse);
@@ -289,8 +338,8 @@ public class RequestHandlerManager {
     transmitter.transmit(endpointId, message);
   }
 
-  private void transmitPromiseOne(
-      String endpointId, String requestId, JsonRpcPromise<Object> promise) {
+  private <R> void transmitPromiseOne(
+      String endpointId, String requestId, JsonRpcPromise<R> promise) {
     promise.onSuccess(result -> transmitOne(endpointId, requestId, result));
     promise.onFailure(
         jsonRpcError -> {
@@ -324,9 +373,8 @@ public class RequestHandlerManager {
       this.biFunction = biFunction;
     }
 
-    private R handle(String endpointId, JsonRpcParams params) {
-      P dto = dtoComposer.composeOne(params, pClass);
-      return biFunction.apply(endpointId, dto);
+    private R handle(String endpointId, P params) {
+      return biFunction.apply(endpointId, params);
     }
   }
 
@@ -342,9 +390,8 @@ public class RequestHandlerManager {
       this.function = function;
     }
 
-    private JsonRpcPromise<R> handle(String endpointId, JsonRpcParams params) {
-      P dto = dtoComposer.composeOne(params, pClass);
-      return function.apply(endpointId, dto);
+    private JsonRpcPromise<R> handle(String endpointId, P params) {
+      return function.apply(endpointId, params);
     }
   }
 
@@ -375,9 +422,8 @@ public class RequestHandlerManager {
       this.biConsumer = biConsumer;
     }
 
-    private void handle(String endpointId, JsonRpcParams params) {
-      P dto = dtoComposer.composeOne(params, pClass);
-      biConsumer.accept(endpointId, dto);
+    private void handle(String endpointId, P param) {
+      biConsumer.accept(endpointId, param);
     }
   }
 
@@ -429,6 +475,10 @@ public class RequestHandlerManager {
     private void handle(String endpointId, JsonRpcParams params) {
       List<P> dto = dtoComposer.composeMany(params, pClass);
       biConsumer.accept(endpointId, dto);
+    }
+
+    public List<P> compose(JsonRpcParams params) {
+      return dtoComposer.composeMany(params, pClass);
     }
   }
 
