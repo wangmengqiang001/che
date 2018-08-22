@@ -261,33 +261,18 @@ public class RequestHandlerManager {
     }
   }
 
-  public <P> void handle(String endpointId, String method, JsonRpcParams params) {
+  public void handle(String endpointId, String method, JsonRpcParams params) {
     mustBeRegistered(method);
 
     switch (methodToCategory.get(method)) {
       case ONE_TO_NONE:
-        {
-          @SuppressWarnings("unchecked")
-          OneToNoneHandler<P> oneToNoneHandler = oneToNoneHandlers.get(method);
-          P param = composeOne(params, oneToNoneHandler.pClass);
-          for (JsonRpcMethodInvokerFilter filter : filters.get(method)) {
-            filter.accept(method, param);
-          }
-          oneToNoneHandler.handle(endpointId, param);
-          break;
-        }
+        oneToNoneHandlers.get(method).handle(endpointId, method, params);
+        break;
       case MANY_TO_NONE:
-        {
-          @SuppressWarnings("unchecked")
-          ManyToNoneHandler<P> manyToNoneHandler = manyToNoneHandlers.get(method);
-          List<P> listDto = composeMany(params, manyToNoneHandler.pClass);
-          filter(method, listDto);
-          manyToNoneHandler.handle(endpointId, params);
-          break;
-        }
+        manyToNoneHandlers.get(method).handle(endpointId, method, params);
+        break;
       case NONE_TO_NONE:
-        filter(method);
-        noneToNoneHandlers.get(method).handle(endpointId);
+        noneToNoneHandlers.get(method).handle(method, endpointId);
         break;
       default:
         LOGGER.error("Something went wrong trying to find out handler category");
@@ -422,7 +407,9 @@ public class RequestHandlerManager {
       this.biConsumer = biConsumer;
     }
 
-    private void handle(String endpointId, P param) {
+    private void handle(String endpointId, String method, JsonRpcParams params) {
+      P param = composeOne(params, pClass);
+      filter(method, param);
       biConsumer.accept(endpointId, param);
     }
   }
@@ -472,9 +459,10 @@ public class RequestHandlerManager {
       this.biConsumer = biConsumer;
     }
 
-    private void handle(String endpointId, JsonRpcParams params) {
-      List<P> dto = dtoComposer.composeMany(params, pClass);
-      biConsumer.accept(endpointId, dto);
+    private void handle(String endpointId, String method, JsonRpcParams params) {
+      List<P> listDto = composeMany(params, pClass);
+      filter(method, listDto);
+      biConsumer.accept(endpointId, listDto);
     }
 
     public List<P> compose(JsonRpcParams params) {
@@ -517,7 +505,8 @@ public class RequestHandlerManager {
       this.consumer = consumer;
     }
 
-    private void handle(String endpointId) {
+    private void handle(String method, String endpointId) {
+      filter(method);
       consumer.accept(endpointId);
     }
   }
