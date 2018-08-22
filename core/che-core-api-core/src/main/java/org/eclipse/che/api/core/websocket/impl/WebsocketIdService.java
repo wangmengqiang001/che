@@ -21,7 +21,7 @@ import org.eclipse.che.api.core.jsonrpc.commons.RequestHandlerConfigurator;
  * There are several identifier elements to distinguish: clientId, endpointId, combinedId. Client id
  * is the identifier of a client that is passed over websocket to the client and back. EndpointId is
  * called to identify a websocket endpoint client connects through. CombinedId is a combination of
- * client and endpoint identifiers separated by a sequence of special charaters, it is used
+ * client and endpoint identifiers separated by a sequence of special characters, it is used
  * internally.
  */
 @Singleton
