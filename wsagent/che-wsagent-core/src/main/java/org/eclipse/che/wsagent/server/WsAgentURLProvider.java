@@ -14,6 +14,7 @@ package org.eclipse.che.wsagent.server;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static org.eclipse.che.api.workspace.shared.Constants.SERVER_WS_AGENT_HTTP_REFERENCE;
 
+import com.google.common.base.MoreObjects;
 import java.io.IOException;
 import javax.inject.Inject;
 import javax.inject.Named;
@@ -62,10 +63,18 @@ public class WsAgentURLProvider implements Provider<String> {
                 .asDto(WorkspaceDto.class);
         if (workspace.getRuntime() != null) {
           for (MachineDto machine : workspace.getRuntime().getMachines().values()) {
-            ServerDto wsAgent = machine.getServers().get(SERVER_WS_AGENT_HTTP_REFERENCE);
-            if (wsAgent != null) {
-              cachedAgentUrl = wsAgent.getUrl();
+            LOG.info("Machine {}", machine);
+            if (machine.getServers() != null && machine.getServers().size() > 0) {
+              ServerDto wsAgent =
+                  MoreObjects.firstNonNull(
+                      machine.getServers().get(SERVER_WS_AGENT_HTTP_REFERENCE),
+                      machine.getServers().get(SERVER_WS_AGENT_HTTP_REFERENCE.replace('/', '-')));
+              LOG.info("wsAgent {}", wsAgent);
+              if (wsAgent != null) {
+                cachedAgentUrl = wsAgent.getUrl();
+              }
             }
+            LOG.info("cachedAgentUrl {}", cachedAgentUrl);
           }
         }
       } catch (ApiException | IOException ex) {
@@ -73,6 +82,7 @@ public class WsAgentURLProvider implements Provider<String> {
         throw new RuntimeException("Failed to configure wsagent endpoint");
       }
     }
+    LOG.info("cachedAgentUrl {}", cachedAgentUrl);
     return cachedAgentUrl;
   }
 }
